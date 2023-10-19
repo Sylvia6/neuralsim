@@ -328,7 +328,7 @@ def main_function(args: ConfigDict):
         total_fg_psnr_only_in_mask = None
         total_bg_psnr = None
     
-    psnr_f = os.path.join(vid_root, f'{name}.txt')
+    psnr_f = os.path.join(vid_root, f'{name}_psnr.txt')
     with open(psnr_f, 'w') as f:
         f.write(f"full: {total_full_psnr:.4f}\n")
         if total_fg_psnr is not None:
@@ -337,20 +337,29 @@ def main_function(args: ConfigDict):
             f.write(f"bg: {total_bg_psnr:.4f}\n")
         
         if total_fg_psnr is not None:
+            f.write("full".center(40, '=') + '\n')
+            for cam_id, vals in all_full_psnr.items():
+                f.write(f"{cam_id}: {total_full_psnr_per_cam[cam_id]:.4f}\n")
+            for cam_id, vals in all_full_psnr.items():
+                f.write('-'*40 + '\n')
+                f.write(f"{cam_id}: {total_full_psnr_per_cam[cam_id]:.4f}\n")
+                f.writelines([f"{v:.4f}\n" for v in vals])
+                f.write("\n")
+
             f.write("fg".center(40, '=') + '\n')
             for cam_id, vals in all_fg_psnr.items():
                 f.write(f"{cam_id}: {total_fg_psnr_per_cam[cam_id]:.4f}\n")
             for cam_id, vals in all_fg_psnr.items():
-                f.write('='*40 + '\n')
+                f.write('-'*40 + '\n')
                 f.write(f"{cam_id}: {total_fg_psnr_per_cam[cam_id]:.4f}\n")
                 f.writelines([f"{v:.4f}\n" for v in vals])
                 f.write("\n")
 
             f.write("fg_only_in_mask".center(40, '=') + '\n')
-            for cam_id, vals in all_fg_psnr.items():
+            for cam_id, vals in all_fg_psnr_only_in_mask.items():
                 f.write(f"{cam_id}: {total_fg_psnr_only_in_mask_per_cam[cam_id]:.4f}\n")
-            for cam_id, vals in all_fg_psnr.items():
-                f.write('='*40 + '\n')
+            for cam_id, vals in all_fg_psnr_only_in_mask.items():
+                f.write('-'*40 + '\n')
                 f.write(f"{cam_id}: {total_fg_psnr_only_in_mask_per_cam[cam_id]:.4f}\n")
                 f.writelines([f"{v:.4f}\n" for v in vals])
                 f.write("\n")
@@ -359,19 +368,11 @@ def main_function(args: ConfigDict):
             for cam_id, vals in all_bg_psnr.items():
                 f.write(f"{cam_id}: {total_bg_psnr_per_cam[cam_id]:.4f}\n")
             for cam_id, vals in all_bg_psnr.items():
-                f.write('='*40 + '\n')
+                f.write('-'*40 + '\n')
                 f.write(f"{cam_id}: {total_bg_psnr_per_cam[cam_id]:.4f}\n")
                 f.writelines([f"{v:.4f}\n" for v in vals])
                 f.write("\n")
             
-            f.write("full".center(40, '=') + '\n')
-            for cam_id, vals in all_full_psnr.items():
-                f.write(f"{cam_id}: {total_full_psnr_per_cam[cam_id]:.4f}\n")
-            for cam_id, vals in all_full_psnr.items():
-                f.write('='*40 + '\n')
-                f.write(f"{cam_id}: {total_full_psnr_per_cam[cam_id]:.4f}\n")
-                f.writelines([f"{v:.4f}\n" for v in vals])
-                f.write("\n")
     log.info(f"PSNR saved to {psnr_f}")
     
     
@@ -390,7 +391,7 @@ def main_function(args: ConfigDict):
         total_fg_ssim_only_in_mask = None
         total_bg_ssim = None
     
-    ssim_f = os.path.join(vid_root, f'{name}.txt')
+    ssim_f = os.path.join(vid_root, f'{name}_ssim.txt')
     with open(ssim_f, 'w') as f:
         f.write(f"full: {total_full_ssim:.4f}\n")
         if total_fg_ssim_only_in_mask is not None:
@@ -399,20 +400,29 @@ def main_function(args: ConfigDict):
             f.write(f"bg: {total_bg_ssim:.4f}\n")
         
         if total_fg_ssim_only_in_mask is not None:
+            f.write("full".center(40, '=') + '\n')
+            for cam_id, vals in all_full_ssim.items():
+                f.write(f"{cam_id}: {total_full_ssim_per_cam[cam_id]:.4f}\n")
+            for cam_id, vals in all_full_ssim.items():
+                f.write('-'*40 + '\n')
+                f.write(f"{cam_id}: {total_full_ssim_per_cam[cam_id]:.4f}\n")
+                f.writelines([f"{v:.4f}\n" for v in vals])
+                f.write("\n")
+
             f.write("fg".center(40, '=') + '\n')
             for cam_id, vals in all_fg_ssim.items():
                 f.write(f"{cam_id}: {total_fg_ssim_per_cam[cam_id]:.4f}\n")
             for cam_id, vals in all_fg_ssim.items():
-                f.write('='*40 + '\n')
+                f.write('-'*40 + '\n')
                 f.write(f"{cam_id}: {total_fg_ssim_per_cam[cam_id]:.4f}\n")
                 f.writelines([f"{v:.4f}\n" for v in vals])
                 f.write("\n")
             
             f.write("fg_only_in_mask".center(40, '=') + '\n')
-            for cam_id, vals in all_fg_ssim.items():
+            for cam_id, vals in all_fg_ssim_only_in_mask.items():
                 f.write(f"{cam_id}: {total_fg_ssim_only_in_mask_per_cam[cam_id]:.4f}\n")
-            for cam_id, vals in all_fg_ssim.items():
-                f.write('='*40 + '\n')
+            for cam_id, vals in all_fg_ssim_only_in_mask.items():
+                f.write('-'*40 + '\n')
                 f.write(f"{cam_id}: {total_fg_ssim_only_in_mask_per_cam[cam_id]:.4f}\n")
                 f.writelines([f"{v:.4f}\n" for v in vals])
                 f.write("\n")
@@ -421,19 +431,11 @@ def main_function(args: ConfigDict):
             for cam_id, vals in all_bg_ssim.items():
                 f.write(f"{cam_id}: {total_bg_ssim_per_cam[cam_id]:.4f}\n")
             for cam_id, vals in all_bg_ssim.items():
-                f.write('='*40 + '\n')
+                f.write('-'*40 + '\n')
                 f.write(f"{cam_id}: {total_bg_ssim_per_cam[cam_id]:.4f}\n")
                 f.writelines([f"{v:.4f}\n" for v in vals])
                 f.write("\n")
             
-            f.write("full".center(40, '=') + '\n')
-            for cam_id, vals in all_full_ssim.items():
-                f.write(f"{cam_id}: {total_full_ssim_per_cam[cam_id]:.4f}\n")
-            for cam_id, vals in all_full_ssim.items():
-                f.write('='*40 + '\n')
-                f.write(f"{cam_id}: {total_full_ssim_per_cam[cam_id]:.4f}\n")
-                f.writelines([f"{v:.4f}\n" for v in vals])
-                f.write("\n")
     log.info(f"SSIM saved to {ssim_f}")
     
     
@@ -443,11 +445,13 @@ def main_function(args: ConfigDict):
     misc['fg_psnr'] = total_fg_psnr
     misc['fg_psnr_only_in_mask'] = total_fg_psnr_only_in_mask
     misc['bg_psnr'] = total_bg_psnr
+    misc['psnr'] = '-'*40+'\n'
     
     misc['full_ssim'] = total_full_ssim
     misc['fg_ssim'] = total_fg_ssim
     misc['fg_ssim_only_in_mask'] = total_fg_ssim_only_in_mask
     misc['bg_ssim'] = total_bg_ssim
+    misc['ssim'] = '-'*40+'\n'
     
     total_mask_per_cam = {cam_id: (np.array(vals).mean() if len(vals) > 0 else 0) for cam_id, vals in all_mask_metric.items()}
     total_mask_metric = np.array(list((total_mask_per_cam.values()))).mean()
@@ -463,7 +467,9 @@ def main_function(args: ConfigDict):
         
     misc_f = os.path.join(vid_root, f'{name}_misc.json')
     with open(misc_f, 'w') as f:
-        json.dump(misc, f)
+        # json.dump(misc, f)
+        for k, v in misc.items():
+            f.write(f'{k:<20}: {v} \n')
     log.info(f"MISC saved to {misc_f}")
 
     #--------- Seperate video
