@@ -5,6 +5,7 @@
 """
 import os
 import pickle
+import imageio, cv2
 import numpy as np
 from glob import glob
 from typing import Any, Dict, List
@@ -18,10 +19,10 @@ from dataio.utils import clip_node_data, clip_node_segments
 from dataio.autonomous_driving.custom.filter_dynamic import stat_dynamic_objects
 
 def idx_to_frame_str(frame_index):
-    return f'{frame_index:08d}'
+    return f'{int(frame_index):06d}'
 
 def idx_to_img_filename(frame_index):
-    return f'{idx_to_frame_str(frame_index)}.jpg'
+    return f'{idx_to_frame_str(frame_index)}.png'
 
 def idx_to_lidar_filename(frame_index):
     return f'{idx_to_frame_str(frame_index)}.npz'
@@ -29,6 +30,19 @@ def idx_to_lidar_filename(frame_index):
 def idx_to_mask_filename(frame_index, compress=True):
     ext = 'npz' if compress else 'npy'
     return f'{idx_to_frame_str(frame_index)}.{ext}'
+     
+def cal_shadow_mask(ret, ratio=[1.2, 1.1]):
+    mask = ret.astype(np.uint8) * 255   # h,w
+    # 查找轮廓
+    contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    for contour in contours:
+        # 计算包围盒
+        x, y, w, h = cv2.boundingRect(contour)
+        x_shift = x - (w * (ratio[0]-1)) / 2
+        x_min, y_min = int(max(0, x_shift)), int(max(0, y))
+        x_max, y_max = int(min(mask.shape[1], x_shift + ratio[1] * w)), int(min(mask.shape[0], y + ratio[0] * h))
+        ret[y_min:y_max, x_min:x_max] = True
+    return ret
 
 #---------------- Cityscapes semantic segmentation
 cityscapes_classes = [
@@ -58,14 +72,14 @@ class CustomAutoDriveDataset(DatasetIO):
         image_dirname: str = 'images', 
         lidar_dirname: str = 'lidars', 
         mask_dirname: str = 'masks', 
-        mono_depth_dirname: str = "depths", 
-        mono_normals_dirname: str = "normals", 
+        rgb_mono_depth_dirname: str = "depths", 
+        rgb_mono_normals_dirname: str = "normals", 
         ):
         self.main_class_name = "Street"
         self.root = root
         self.image_dirname = image_dirname
-        self.mono_depth_dirname = mono_depth_dirname
-        self.mono_normals_dirname = mono_normals_dirname
+        self.rgb_mono_depth_dirname = rgb_mono_depth_dirname
+        self.rgb_mono_normals_dirname = rgb_mono_normals_dirname
         self.lidar_dirname = lidar_dirname
         self.mask_dirname = mask_dirname
 
@@ -92,7 +106,7 @@ class CustomAutoDriveDataset(DatasetIO):
         object_cfgs: dict = {}, # scene_bank's per class_name object configs
         no_objects=False, # Set to [true] to load no object at all.
         align_orientation=False, # Set to [true] to rotate the street obj to align with major vehicle moving direction
-        camera_front_name='camera_FRONT', 
+        camera_front_name='front_left', 
         camera_model='pinhole', # [pinhole, opencv, fisheye]; respected in Scene.load_from_scenario.load_observers
         aabb_extend: float = 60.0, # Not actually used for now.
         start=None, stop=None, # (Optionally) Drop beggining frames or ending frames that we do not want.
@@ -298,8 +312,11 @@ class CustomAutoDriveDataset(DatasetIO):
         if stop is None or stop == -1: stop = scenario['metas']['n_frames']
         
         # cam_intrs_all = np.array(cam_intrs_all).reshape(-1, 3, 3)
-        # cam_c2ws_all = np.array(cam_c2ws_all).reshape(-1, 4, 4)
-        cam_front_c2ws_all = np.array(cam_front_c2ws_all).reshape(-1, 4, 4)[start:stop]
+        cam_c2ws_all = np.array(cam_c2ws_all).reshape(-1, 4, 4)
+        
+        cam_front_c2ws_all = cam_c2ws_all # for vio-pose  json data
+        
+        # cam_front_c2ws_all = np.array(cam_front_c2ws_all).reshape(-1, 4, 4)[start:stop]
         
         # NOTE: Convert original [camera<openCV> to world<self>] to [camera<self> to world<self>] 
         #       (i.e. to get camera's poses in world)
@@ -347,9 +364,11 @@ class CustomAutoDriveDataset(DatasetIO):
         with open(scenario_fpath, 'rb') as f:
             scenario = pickle.load(f)
         # return scenario
+        # self.names = scenario['metas']['names']  # vio
         return self._get_scenario(scenario, **kwargs)
 
     def get_image(self, scene_id: str, camera_id: str, frame_index: int) -> np.ndarray:
+        # frame_index = self.names[frame_index]    # vio
         fpath = os.path.join(self.root, scene_id, self.image_dirname, camera_id, idx_to_img_filename(frame_index))
         assert os.path.exists(fpath), f"Not exist: {fpath}"
         return load_rgb(fpath)
@@ -367,7 +386,7 @@ class CustomAutoDriveDataset(DatasetIO):
         normals = load_rgb(fpath)*2-1
         return normals
 
-    def get_raw_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True):
+    def get_raw_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=False):
         fpath = os.path.join(self.root, scene_id, self.mask_dirname, camera_id, idx_to_mask_filename(frame_index, compress=compress))
         assert os.path.exists(fpath), f"Not exist: {fpath}"
         # [H, W]
@@ -376,23 +395,29 @@ class CustomAutoDriveDataset(DatasetIO):
         else:
             arr = np.load(fpath)
         return arr
-    def get_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True) -> np.ndarray:
+    
+    def get_occupancy_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=False) -> np.ndarray:
         raw = self.get_raw_mask(scene_id, camera_id, frame_index, compress=compress)
         ret = np.ones_like(raw).astype(np.bool8)
         ret[raw==cityscapes_classes_ind_map['sky']] = False
         # [H, W] 
         # Binary occupancy mask on RGB image. 1 for occpied, 0 for not.
         return ret.squeeze()
-    def get_dynamic_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True):
+
+    def get_dynamic_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=False):
         raw = self.get_raw_mask(scene_id, camera_id, frame_index, compress=compress)
         ret = np.zeros_like(raw).astype(np.bool8)
         for cls in cityscapes_dynamic_classes:
             ind = cityscapes_classes_ind_map[cls]
             ret[raw==ind] = True
+
+        # gen shadow mask for test, please set preload=true in config.yaml , ortherwise may reduce speed
+        ret = cal_shadow_mask(ret.squeeze())
         # [H, W] 
         # Binary dynamic mask on RGB image. 1 for dynamic object, 0 for static.
         return ret.squeeze()
-    def get_human_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True):
+    
+    def get_human_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=False):
         raw = self.get_raw_mask(scene_id, camera_id, frame_index, compress=compress)
         ret = np.zeros_like(raw).astype(np.bool8)
         for cls in cityscapes_human_classes:
@@ -401,7 +426,8 @@ class CustomAutoDriveDataset(DatasetIO):
         # [H, W] 
         # Binary dynamic mask on RGB image. 1 for human-related object, 0 for other.
         return ret.squeeze()
-    def get_road_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=True):
+    
+    def get_road_mask(self, scene_id: str, camera_id: str, frame_index: int, *, compress=False):
         raw = self.get_raw_mask(scene_id, camera_id, frame_index, compress=compress)
         ret = np.zeros_like(raw).astype(np.bool8)
         ret[raw==cityscapes_classes_ind_map['road']] = True
