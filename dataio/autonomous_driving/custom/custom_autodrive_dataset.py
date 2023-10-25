@@ -31,12 +31,10 @@ def idx_to_mask_filename(frame_index, compress=True):
     ext = 'npz' if compress else 'npy'
     return f'{idx_to_frame_str(frame_index)}.{ext}'
      
-def cal_shadow_mask(ret, ratio=[1.2, 1.1]):
+def cal_shadow_mask(ret, ratio=[1.2, 1.0]):
     mask = ret.astype(np.uint8) * 255   # h,w
-    # 查找轮廓
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
     for contour in contours:
-        # 计算包围盒
         x, y, w, h = cv2.boundingRect(contour)
         x_shift = x - (w * (ratio[0]-1)) / 2
         x_min, y_min = int(max(0, x_shift)), int(max(0, y))
@@ -99,12 +97,27 @@ class CustomAutoDriveDataset(DatasetIO):
         opencv_to_world[:3 ,:3] = np.array([[0, 0, 1],[-1, 0, 0],[0, -1, 0]])
         self.opencv_to_world = opencv_to_world
     
+    @property
+    def up_vec(self) -> np.ndarray:
+        return np.array([0., 0., 1.])   
+
+    @property
+    def forward_vec(self) -> np.ndarray:
+        return np.array([1., 0., 0.])
+    
+    @property
+    def right_vec(self) -> np.ndarray:
+        return np.array([0., -1., 0.])
+
     def _get_scenario(
         self, scenario: dict, # The original scenario loaded from preprocessed dataset
         *, 
         observer_cfgs: dict, # scene_bank's per class_name observer configs
         object_cfgs: dict = {}, # scene_bank's per class_name object configs
         no_objects=False, # Set to [true] to load no object at all.
+        joint_camlidar=True, # Joint all cameras and lidars; Set this to [true] if you needs to calibrate cam/lidar extr
+        joint_camlidar_equivalent_extr=True, # Set to [false] if you needs to calibrate cam/lidar extr
+        consider_distortion=False, # Set to [true] to take care of camera distortions.
         align_orientation=False, # Set to [true] to rotate the street obj to align with major vehicle moving direction
         camera_front_name='front_left', 
         camera_model='pinhole', # [pinhole, opencv, fisheye]; respected in Scene.load_from_scenario.load_observers
@@ -220,7 +233,20 @@ class CustomAutoDriveDataset(DatasetIO):
         #------------------------------------------------------
         #------------------     Ego Car      ------------------
         #------------------------------------------------------
-        # frame_pose = scenario['observers']['ego_car']['data']['v2w']
+        frame_pose = scenario['observers']['ego_car']['data']['v2w']
+        if joint_camlidar:
+            ego_car = dict(
+                class_name='EgoVehicle', 
+                children=dict(), 
+                n_frames=scenario['observers']['ego_car']['n_frames'], 
+                data=dict(
+                    transform=frame_pose, 
+                    # timestamp=scenario['observers']['ego_car']['data']['timestamp'], 
+                    global_frame_ind=scenario['observers']['ego_car']['data']['global_frame_ind']
+                )
+            )
+            ego_car = clip_node_data(ego_car, start, stop)
+            new_scene_observers['ego_car'] = ego_car
         
         cam_intrs_all = []
         cam_c2ws_all = []
@@ -229,8 +255,9 @@ class CustomAutoDriveDataset(DatasetIO):
         #------------------------------------------------------
         #------------------     Cameras      ------------------
         #------------------------------------------------------
-        if 'Camera' in observer_cfgs.keys():
-            new_scenario['metas']['cam_id_list'] = observer_cfgs['Camera'].list
+        # if 'Camera' in observer_cfgs.keys():
+        #     new_scenario['metas']['cam_id_list'] = observer_cfgs['Camera'].list
+
         for oid, odict in scenario['observers'].items():
             if (o_class_name:=odict['class_name']) == 'Camera':
                 hw = odict['data']['hw']
@@ -238,12 +265,13 @@ class CustomAutoDriveDataset(DatasetIO):
                 # intr = np.tile(np.eye(3), [original_num_frames,1,1])
                 # intr[:,0,0], intr[:,1,1], intr[:,0,2], intr[:,1,2] = odict['data']['intr'][:,:4].T
                 #---- Opt2: [3,3]
-                intr = odict['data']['intr'][..., :3, :3]
-                
+                intr = odict['data']['intr'][..., :3, :3]                
+                distortion = odict['data']['distortion']
                 c2w = odict['data']['c2w']
-                # timestamp = odict['data']['timestamp']
-                # global_frame_ind = odict['data']['global_frame_ind']
-                global_frame_ind = np.arange(original_num_frames)
+                c2v = odict['data']['c2v']
+                v2w = odict['data']['sensor_v2w']
+                timestamp = odict['data']['timestamp']
+                global_frame_ind = odict['data']['global_frame_ind']
                 
                 cam_intrs_all.append(intr)
                 cam_c2ws_all.append(c2w)
@@ -257,35 +285,79 @@ class CustomAutoDriveDataset(DatasetIO):
                 if oid not in observer_cfgs[o_class_name].list:
                     # Ignore un-wanted oberver id
                     continue
-                
-                new_odict = dict(
-                    class_name='Camera', n_frames=odict['n_frames'], 
-                    camera_model=camera_model, 
-                    data=dict(
-                        # timestamp=timestamp, 
-                        global_frame_ind=global_frame_ind, 
-                        hw=hw, intr=intr, transform=c2w
+               
+                camera_model = 'opencv' if consider_distortion else 'pinhole'
+                if not joint_camlidar:
+                    new_odict = dict(
+                        class_name='Camera', n_frames=odict['n_frames'], 
+                        camera_model=camera_model, 
+                        data=dict(
+                            # timestamp=timestamp, 
+                            global_frame_ind=global_frame_ind, 
+                            hw=hw, intr=intr, 
+                            # distortion=distortion, 
+                            transform=c2w
+                        )
                     )
-                )
-                if camera_model != 'pinhole':
-                    assert RuntimeError(f"camera_model={camera_model} expects `distortion` parameter")
-                    distortion = odict['data']['distortion']
-                    new_odict['data']['distortion'] = distortion
+                    new_scene_observers[oid] = clip_node_data(new_odict, start, stop)
+                else:
+                    dpose = np.linalg.inv(frame_pose @ c2v) @ (v2w @ c2v)
+                    if joint_camlidar_equivalent_extr:
+                        new_odict = dict(
+                            class_name='Camera', n_frames=odict['n_frames'], 
+                            camera_model=camera_model, 
+                            data=dict(
+                                # timestamp=timestamp, 
+                                global_frame_ind=global_frame_ind, 
+                                hw=hw, intr=intr,
+                                #   distortion=distortion, 
+                                transform=c2v @ dpose
+                                # transform=c2v, 
+                                # dpose=dpose,
+                            )
+                        )
+                        ego_car['children'][oid] = clip_node_data(new_odict, start, stop)
+                    else: # TODO: Needed when calibrating cameras
+                        raise NotImplementedError("jianfei: Not recommended until timestamp indexing is supported.")
+                        new_odict = dict(
+                            class_name='Camera', n_frames=odict['n_frames'], 
+                            camera_model=camera_model, 
+                            data=dict(
+                                timestamp=timestamp, global_frame_ind=global_frame_ind, 
+                                hw=hw, intr=intr, distortion=distortion, 
+                                transform=c2v, dpose=dpose
+                            )
+                        )
+                        ego_car['children'][oid] = clip_node_data(new_odict, start, stop)
+
+ 
+                # new_odict = dict(
+                #     class_name='Camera', n_frames=odict['n_frames'], 
+                #     camera_model=camera_model, 
+                #     data=dict(
+                #         # timestamp=timestamp, 
+                #         global_frame_ind=global_frame_ind, 
+                #         hw=hw, intr=intr, transform=c2w
+                #     )
+                # )
+                # if camera_model != 'pinhole':
+                #     assert RuntimeError(f"camera_model={camera_model} expects `distortion` parameter")
+                #     distortion = odict['data']['distortion']
+                #     new_odict['data']['distortion'] = distortion
                     
                 #---- Clip according to start, stop
-                new_scene_observers[oid] = clip_node_data(new_odict, start, stop)
+                # new_scene_observers[oid] = clip_node_data(new_odict, start, stop)
 
         #------------------------------------------------------
         #-------------------     Lidars      ------------------
         #------------------------------------------------------
-        if 'RaysLidar' in observer_cfgs.keys():
-            new_scenario['metas']['lidar_id_list'] = observer_cfgs['RaysLidar'].list
+        # if 'RaysLidar' in observer_cfgs.keys():
+        #     new_scenario['metas']['lidar_id_list'] = observer_cfgs['RaysLidar'].list
         for oid, odict in scenario['observers'].items():
             if (o_class_name:=odict['class_name']) == 'RaysLidar':
                 # l2v = odict['data']['l2v']
                 # timestamp = odict['data']['timestamp']
-                # global_frame_ind = odict['data']['global_frame_ind']
-                global_frame_ind = np.arange(original_num_frames)
+                global_frame_ind = odict['data']['global_frame_ind']
                 
                 if o_class_name not in observer_cfgs.keys():
                     # Ignore un-wanted class_names
@@ -293,17 +365,35 @@ class CustomAutoDriveDataset(DatasetIO):
                 if oid not in observer_cfgs[o_class_name].list:
                     # Ignore un-wanted oberver id
                     continue
-
-                new_odict = dict(
-                    class_name='RaysLidar', n_frames=odict['n_frames'], 
-                    data=dict(
-                        # timestamp=timestamp, 
-                        global_frame_ind=global_frame_ind, 
-                        transform=np.tile(np.eye(4), [original_num_frames,1,1])
-                        # transform=frame_pose @ l2v
+                
+                if joint_camlidar:
+                    new_odict = dict(
+                        class_name='RaysLidar', n_frames=odict['n_frames'], 
+                        data=dict(timestamp=timestamp, global_frame_ind=global_frame_ind, 
+                            # transform=l2v
+                        )
                     )
-                )
-                new_scene_observers[oid] = clip_node_data(new_odict, start, stop)
+                    ego_car['children'][oid] = clip_node_data(new_odict, start, stop)
+                else:
+                    new_odict = dict(
+                        class_name='RaysLidar', n_frames=odict['n_frames'], 
+                        data=dict(timestamp=timestamp, global_frame_ind=global_frame_ind, 
+                            # transform=frame_pose @ l2v
+                        )
+                    )
+                    new_scene_observers[oid] = clip_node_data(new_odict, start, stop)
+
+
+                # new_odict = dict(
+                #     class_name='RaysLidar', n_frames=odict['n_frames'], 
+                #     data=dict(
+                #         # timestamp=timestamp, 
+                #         global_frame_ind=global_frame_ind, 
+                #         transform=np.tile(np.eye(4), [original_num_frames,1,1])
+                #         # transform=frame_pose @ l2v
+                #     )
+                # )
+                # new_scene_observers[oid] = clip_node_data(new_odict, start, stop)
 
         #------------------------------------------------------
         #---------------     Other meta infos      ------------
